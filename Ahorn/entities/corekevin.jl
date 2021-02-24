@@ -35,7 +35,7 @@ frameImage = Dict{String, String}(
 smallFace = "objects/nyahhelper/corekevin/idle_face"
 giantFace = "objects/nyahhelper/corekevin/giant_block00"
 
-kevinColor = (98, 34, 43) ./ 255
+kevinColor = (103, 29, 29) ./ 255
 
 Ahorn.editingOptions(entity::CoreKevin) = Dict{String, Any}(
     "axes" => Maple.kevin_axes

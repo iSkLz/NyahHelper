@@ -10,5 +10,6 @@ namespace NyahHelper
         public readonly static BindingFlags PublicInstance = BindingFlags.Public | BindingFlags.Instance;
         public readonly static BindingFlags PrivateStatic = BindingFlags.NonPublic | BindingFlags.Static;
         public readonly static BindingFlags PublicStatic = BindingFlags.Public | BindingFlags.Static;
+        public readonly static BindingFlags All = PrivateInstance | PublicInstance | PrivateStatic | PublicStatic;
     }
 }

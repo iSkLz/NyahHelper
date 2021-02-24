@@ -4,6 +4,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 
+using MonoMod.RuntimeDetour;
+using MonoMod.Cil;
+using Mono.Cecil.Cil;
+
 using NyahHelper.Components;
 
 using Microsoft.Xna.Framework;
@@ -16,71 +20,93 @@ using Celeste.Mod.Entities;
 
 namespace NyahHelper.Entities.Blocks
 {
+    // TODO: Separate the synced move block from the customizable move block (speed and color)
+    // Hooks will conflict when other move block variations are added
+    // TODO 2: Similar hooks are required for custom move blocks, so maybe figure out a way to keep everything clean? Like a ModdableMoveBlock that manages hooks
+
     public static class SyncedMoveBlockHook
     {
-        public static SyncedMoveBlock ToPatch;
+        public static float SpeedPatch;
+        static readonly FieldInfo _speedPatch = typeof(SyncedMoveBlockHook).GetField(nameof(SpeedPatch), Constants.PublicStatic);
+
+        public static bool MovePatch;
+        static readonly FieldInfo _movePatch = typeof(SyncedMoveBlockHook).GetField(nameof(MovePatch), Constants.PublicStatic);
+
+        public static IDetour ControllerILHook;
+
+        public static void Unhook()
+        {
+            ControllerILHook.Dispose();
+            ControllerILHook = null;
+
+            On.Celeste.MoveBlock.UpdateColors -= MoveBlock_UpdateColors;
+            On.Celeste.MoveBlock.Controller -= MoveBlock_Controller;
+            On.Monocle.Scene.BeforeUpdate -= Scene_BeforeUpdate;
+        }
 
         public static void Hook()
         {
-            for (int i = 0; i < SyncedMoveBlock.SyncTracker.Length; i++)
-            {
-                SyncedMoveBlock.SyncTracker[i] = new List<SyncedMoveBlock>();
-            }
-
             // For replacing the active color (green -> custom)
             On.Celeste.MoveBlock.UpdateColors += MoveBlock_UpdateColors;
 
             // For syncing movement
-            On.Celeste.Solid.HasPlayerOnTop += Solid_HasPlayerOnTop;
-            On.Celeste.Solid.HasPlayerClimbing += Solid_HasPlayerClimbing;
+            On.Monocle.Scene.BeforeUpdate += Scene_BeforeUpdate;
 
-            // For custom speed
-            // This is a VERY VERY dumb way of doing it but I can't really figure out any better way
-            // As of writing this I am offline so I have no resources whatsoever
+            // For custom speed and syncing movement
             On.Celeste.MoveBlock.Controller += MoveBlock_Controller;
-            On.Celeste.SoundSource.Play += SoundSource_Play;
+            ControllerILHook = new ILHook(typeof(MoveBlock).GetNestedType("<Controller>d__45", BindingFlags.NonPublic).GetMethod("MoveNext", Constants.All), MoveBlock_ControllerIL);
 
             Logger.Log("Nyah Helper", "Synced Move Block hooks executed");
         }
 
-        #region Sync Movement Hooks
-        private static bool Solid_HasPlayerClimbing(On.Celeste.Solid.orig_HasPlayerClimbing orig, Solid self)
+        #region Frame Start Hook
+        private static void Scene_BeforeUpdate(On.Monocle.Scene.orig_BeforeUpdate orig, Scene self)
         {
-            // If the caller is a synced move block which's color is active
-            if (self is SyncedMoveBlock block && SyncedMoveBlock.SyncTracker[block.Hue].Count > 0) return true;
-            else return orig(self);
-        }
+            orig(self);
+            var list = self.Tracker.GetEntities<SyncedMoveBlock>();
+            var updated = new bool[361];
 
-        private static bool Solid_HasPlayerOnTop(On.Celeste.Solid.orig_HasPlayerOnTop orig, Solid self)
-        {
-            if (self is SyncedMoveBlock block && SyncedMoveBlock.SyncTracker[block.Hue].Count > 0) return true;
-            else return orig(self);
+            foreach (SyncedMoveBlock block in list)
+            {
+                if (!updated[block.Hue] && block.Controlled)
+                {
+                    updated[block.Hue] = true; // Only broadcast once per color
+                    block.Broadcaster.BroadcastEvent("move");
+                }
+            }
         }
         #endregion
 
-        #region Custom Speed Hooks
-        private static SoundSource SoundSource_Play(On.Celeste.SoundSource.orig_Play orig, SoundSource self, string path, string param, float value)
+        #region Controller Routine IL Hook
+        private static void MoveBlock_ControllerIL(ILContext il)
         {
-            // If we have a synced move block to patch
-            if (!(ToPatch is null))
-            {
-                ToPatch.FullSpeed = ToPatch.CustomSpeed;
-                // Set back to null for next calls
-                ToPatch = null;
-            }
-            return orig(self, path, param, value);
-        }
+            FieldInfo fastField = typeof(MoveBlock).GetField("fast", Constants.PrivateInstance);
+            FieldInfo angleField = typeof(MoveBlock).GetField("targetAngle", Constants.PrivateInstance);
+            var cursor = new ILCursor(il);
 
+            // Static fields used here are set in the other coroutine hook
+
+            // Replace the instruction that changes the targetSpeed to 60f (in case of fast == false) with an instruction that loads directly from the static field
+            // Since the synced move block always sets fast to false, we can only change this instruction and default to 60f for vanilla blocks
+            cursor.GotoNext((inst) => inst.MatchLdcR4(60f));
+            cursor.Remove();
+            cursor.Emit(OpCodes.Ldsfld, _speedPatch); // Load the static field instead
+
+            // Replace the check for whether the player is in control of the block with the static field
+            cursor.GotoNext((inst) => inst.MatchStfld(angleField),
+                (inst) => inst.MatchLdloc(1));
+            cursor.GotoNext((inst) => inst.MatchLdloc(2));
+            cursor.Remove();
+            cursor.Emit(OpCodes.Ldsfld, _movePatch);
+            cursor.GotoNext((inst) => inst.MatchLdloc(2));
+            cursor.Remove();
+            cursor.Emit(OpCodes.Ldsfld, _movePatch);
+        }
+        #endregion
+
+        #region Controller Routine Hook
         private static IEnumerator MoveBlock_Controller(On.Celeste.MoveBlock.orig_Controller orig, MoveBlock self)
         {
-            // If not a synced move block, use the original routine
-            if (!(self is SyncedMoveBlock))
-            {
-                yield return orig(self);
-            }
-
-            // Below code is based on decompiled code
-
             var enumerator = orig(self);
             object cur;
 
@@ -90,7 +116,10 @@ namespace NyahHelper.Entities.Blocks
                 cur = enumerator.Current;
             }
 
+            var dir = (int)typeof(MoveBlock).GetField("direction", Constants.PrivateInstance).GetValue(self);
+
             // Mimic the original routine by yielding what it yields
+            // Below code is based on decompiled code
             while (true)
             {
                 // Cycle 1: Before triggering
@@ -101,18 +130,56 @@ namespace NyahHelper.Entities.Blocks
                     step();
                 }
 
-                yield return cur; // 0.2f
-                // Below the yield 0.2f line, there is a line that sets the speed then a line that triggers a sound effect
-                // What I'm doing is temporarily setting the current move block to a static field before calling on the coroutine code
-                // Then I patch the sound effect method to check for that field and edit the speed
-                ToPatch = (SyncedMoveBlock)self;
+                if (self is SyncedMoveBlock syncedSelf)
+                {
+                    // We're going to trigger, so we broadcast the event
+                    self.Scene.OnEndOfFrame += () =>
+                    {
+                        syncedSelf.Broadcaster.BroadcastEvent("trigger");
+                    };
+
+                    // We also wait for other blocks to trigger, for perfect synchronization
+                    // TODO: Find a way to trigger without desyncing with vanilla blocks
+                    yield return null;
+                    yield return null;
+
+                    yield return cur; // 0.2f
+
+                    // After the yield 0.2f line, there is a line that sets the speed
+                    // The patched IL code loads the speed from the static field, so we set it to the custom speed in case of a synced block
+                    SpeedPatch = syncedSelf.CustomSpeed;
+                }
+                else
+                {
+                    yield return cur; // 0.2f
+
+                    // We do the same for the vanilla speed
+                    SpeedPatch = 60f;
+                }
 
                 // Cycle 2: Moving
-                step();
-                while (cur is null)
+                if (self is SyncedMoveBlock syncedSelf2)
                 {
-                    yield return null;
+                    MovePatch = syncedSelf2.Move || syncedSelf2.Controlled;
                     step();
+                    while (cur is null)
+                    {
+                        yield return null;
+                        MovePatch = syncedSelf2.Move || syncedSelf2.Controlled;
+                        step();
+                    }
+                }
+                else
+                {
+                    // A non-synced block, do the vanilla check
+                    MovePatch = (dir > 1) ? self.HasPlayerClimbing() : self.HasPlayerOnTop();
+                    step();
+                    while (cur is null)
+                    {
+                        yield return null;
+                        MovePatch = (dir > 1) ? self.HasPlayerClimbing() : self.HasPlayerOnTop();
+                        step();
+                    }
                 }
 
                 yield return cur; // 0.2f
@@ -144,12 +211,9 @@ namespace NyahHelper.Entities.Blocks
     }
 
     [CustomEntity("nyahhelper/syncedmoveblock")]
+    [Tracked]
     public class SyncedMoveBlock : MoveBlock
     {
-        // There exist 360 different possible synced colors
-        // This tracks every synced move blocks of every sync color
-        public static List<SyncedMoveBlock>[] SyncTracker = new List<SyncedMoveBlock>[361];
-
         public enum MovementState
         {
             Idling,
@@ -168,6 +232,8 @@ namespace NyahHelper.Entities.Blocks
         static readonly FieldInfo _fill = typeof(MoveBlock).GetField("fillColor", Constants.PrivateInstance);
 
         static readonly FieldInfo _fullspeed = typeof(MoveBlock).GetField("targetSpeed", Constants.PrivateInstance);
+
+        static readonly FieldInfo _trigger = typeof(MoveBlock).GetField("triggered", Constants.PrivateInstance);
 
         public static readonly Color IdleColor = (Color)typeof(MoveBlock).GetField("idleBgFill",
             Constants.PrivateStatic).GetValue(null);
@@ -257,46 +323,52 @@ namespace NyahHelper.Entities.Blocks
                 _fullspeed.SetValue(this, value);
             }
         }
+
+        public bool Trigger
+        {
+            get
+            {
+                return (bool)_trigger.GetValue(this);
+            }
+            set
+            {
+                _trigger.SetValue(this, value);
+            }
+        }
         #endregion
 
         public Color Color;
         public int Hue;
         public float CustomSpeed;
 
+        public bool Move;
+
+        public Broadcaster Broadcaster;
+
+        // Decompiled condition
+        public bool Controlled => ((int)Direction > 1) ? HasPlayerClimbing() : HasPlayerOnTop();
+
         public SyncedMoveBlock(EntityData data, Vector2 offset)
             : base(data.Position + offset, data.Width, data.Height, data.Enum("direction", Directions.Left), data.Bool("canSteer"), false)
         {
             // 0.73f and 0.7f are constant to give the same shade as the original color
             // Hue is capped to 360 (degrees)
-            Color = Calc.HsvToColor((Hue = Math.Min(data.Int("colorHue", 122), 360)) / 360f, 0.73f, 0.7f);
+            Color = Calc.HsvToColor((Hue = Math.Max(0, Math.Min(data.Int("colorHue", 122), 360))) / 360f, 0.73f, 0.7f);
 
             CustomSpeed = data.Float("customSpeed", 60f);
-        }
 
-        public override void Update()
-        {
-            base.Update();
+            Add(Broadcaster = new Broadcaster("nyahhelper/syncedmoveblock/" + Hue));
 
-            // Condition based on decompiled code from the Controller coroutine
-            if (State == MovementState.Moving && (((int)Direction > 1) ? HasPlayerClimbing() : HasPlayerOnTop()))
+            // Listen to the trigger event
+            Broadcaster.AddHandler((e) =>
             {
-                if (!SyncTracker[Hue].Contains(this))
-                    SyncTracker[Hue].Add(this);
-            }
-            else if (State != MovementState.Moving)
-            {
-                // TODO: Remove the comments after enough time
-                // I can get away with, without having to check for every synced block of the same hue
-                // If this one is the last one to update, this will be corrected in the next frame
-                // If it's not, coroutines are updated after entities so the next block will correct
-                // This will not affect the current block because it's not moving anyways
-                // Edit: Actually this is a problem, if the previous block to update is active and the next one isn't, this will incorrectly not trigger the next one
-                // Edit From Later: Such good times!
-                // - SyncedMoveBlockHook.States[Hue] = false;
+                Trigger = true;
+            }, "trigger");
 
-                if (SyncTracker[Hue].Contains(this))
-                    SyncTracker[Hue].Remove(this);
-            }
+            Broadcaster.AddHandler((e) =>
+            {
+                Move = true;
+            }, "move");
         }
 
         public void UpdateColors()

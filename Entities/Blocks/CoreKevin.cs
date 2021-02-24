@@ -4,9 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 
-using MonoMod;
 using MonoMod.Cil;
-using Mono.Cecil;
 using Mono.Cecil.Cil;
 
 using NyahHelper.Extensions;
@@ -45,6 +43,7 @@ namespace NyahHelper.Entities.Blocks
         private static readonly FieldInfo _currentBottomVisibility = typeof(CoreKevinHook).GetField(nameof(CurrentBottomVisibility), Constants.PublicStatic);
         #endregion
 
+        // TODO: Unhook
         public static void Hook()
         {
             // Keep track of "active" images state
@@ -52,8 +51,8 @@ namespace NyahHelper.Entities.Blocks
             On.Celeste.CrushBlock.TurnOffImages += CrushBlock_TurnOffImages;
 
             // Sync AddImage with the core mode
-            IL.Celeste.CrushBlock.AddImage += CrushBlock_AddImage;
-            On.Celeste.CrushBlock.AddImage += CrushBlock_AddImage1;
+            IL.Celeste.CrushBlock.AddImage += CrushBlock_AddImageIL;
+            On.Celeste.CrushBlock.AddImage += CrushBlock_AddImage;
 
             // Particles
             On.Celeste.ParticleTypes.Load += ParticleTypes_Load;
@@ -62,7 +61,7 @@ namespace NyahHelper.Entities.Blocks
         }
 
         #region AddImage Hooks
-        private static void CrushBlock_AddImage1(On.Celeste.CrushBlock.orig_AddImage orig, CrushBlock self, MTexture idle, int x, int y, int tx, int ty, int borderX, int borderY)
+        private static void CrushBlock_AddImage(On.Celeste.CrushBlock.orig_AddImage orig, CrushBlock self, MTexture idle, int x, int y, int tx, int ty, int borderX, int borderY)
         {
             if (self is CoreKevin coreSelf)
             {
@@ -86,10 +85,10 @@ namespace NyahHelper.Entities.Blocks
             orig(self, idle, x, y, tx, ty, borderX, borderY);
         }
 
-        private static void CrushBlock_AddImage(ILContext il)
+        private static void CrushBlock_AddImageIL(ILContext il)
         {
             FieldInfo visibleField = typeof(Component).GetField("Visible", Constants.PublicInstance);
-            ILCursor cursor = new ILCursor(il);
+            var cursor = new ILCursor(il);
 
             // 1. Replaces those strings with the static fields defined in this class
             // This allows for dynamically editing those strings at runtime

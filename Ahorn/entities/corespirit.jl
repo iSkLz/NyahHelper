@@ -1,11 +1,12 @@
 ﻿module NyahHelperCoreSpirit
 
 using ..Ahorn, Maple
-@mapdef Entity "nyahhelper/corespirit" CoreSpirit(x::Integer, y::Integer, oneUse::Bool=false, syncWithCoreMode::Bool = false, mode::String="Hot", duration::Real=5f)
+
+@mapdef Entity "nyahhelper/corespirit" CoreSpirit(x::Integer, y::Integer, oneUse::Bool=false, syncWithCoreMode::Bool=false, mode::String="Hot", duration::Real=10.0)
 
 const modes = String[
-    "Hot",
-    "Cold"
+    "hot",
+    "cold"
 ]
 
 const placements = Ahorn.PlacementDict(
@@ -13,14 +14,14 @@ const placements = Ahorn.PlacementDict(
         CoreSpirit,
         "point",
         Dict{String, Any}(
-            "mode" => "Hot"
+            "mode" => "hot"
         )
     ),
 	"Core Spirit (Cold) (Nyah Helper)" => Ahorn.EntityPlacement(
         CoreSpirit,
         "point",
         Dict{String, Any}(
-            "mode" => "Cold"
+            "mode" => "cold"
         )
     )
 )
@@ -31,22 +32,17 @@ Ahorn.editingOptions(entity::CoreSpirit) = Dict{String, Any}(
 
 function Ahorn.selection(entity::CoreSpirit)
     x, y = Ahorn.position(entity)
-    type = get(entity.data, "mode", false)
-
-    if type == "Hot"
-        return Ahorn.getSpriteRectangle("objects/nyahhelper/corespirit/hot/idle00.png", x, y)
-    else
-        return Ahorn.getSpriteRectangle("objects/nyahhelper/corespirit/cold/idle00.png", x, y)
-    end
+	# It's the same selection (for both modes)
+	return Ahorn.getSpriteRectangle("objects/nyahhelper/corespirit/cold/idle00", x, y)
 end
 
 function Ahorn.render(ctx::Ahorn.Cairo.CairoContext, entity::CoreSpirit, room::Maple.Room)
-    type = get(entity.data, "mode", false)
+    coreMode = get(entity.data, "mode", "hot")
 
-    if type == "Hot"
-        Ahorn.drawSprite(ctx, "objects/nyahhelper/corespirit/hot/idle00.png", 0, 0)
+    if coreMode == "hot"
+        Ahorn.drawSprite(ctx, "objects/nyahhelper/corespirit/hot/idle00", 0, 0)
     else
-        Ahorn.drawSprite(ctx, "objects/nyahhelper/corespirit/cold/idle00.png", 0, 0)
+        Ahorn.drawSprite(ctx, "objects/nyahhelper/corespirit/cold/idle00", 0, 0)
     end
 end
 

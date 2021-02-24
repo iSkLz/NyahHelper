@@ -65,7 +65,6 @@ function Ahorn.render(ctx::Ahorn.Cairo.CairoContext, entity::SyncedMoveBlock, ro
 		newColor = (_n3 + _n1, _n3, _n3 + _n2, 1.0)
     end
 
-    show(newColor)
     highlightColor = newColor
     buttonColor = newColor
 

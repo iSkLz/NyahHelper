@@ -19,6 +19,7 @@ namespace NyahHelper.Entities.Refills
         public static bool Immune = false;
         public static CoreSpirit.SpiritMode Mode;
 
+        // TODO: Unhook
         public static void Hook()
         {
             // On touching ice and lava blocks
@@ -178,6 +179,7 @@ namespace NyahHelper.Entities.Refills
             var origAction = PlayerCollider.OnCollide;
             PlayerCollider.OnCollide = (Player player) =>
             {
+                // TODO: Add an outline to the player
                 CoreSpiritHook.Immune = true;
                 CoreSpiritHook.Mode = Mode;
 

@@ -6,6 +6,7 @@ using Monocle;
 
 namespace NyahHelper.Components
 {
+    [Tracked]
     public class Broadcaster : Component
     {
         public readonly string Channel;
@@ -24,7 +25,7 @@ namespace NyahHelper.Components
         /// <param name="eventName">Name of the event</param>
         public void FireEvent(string channel, string eventName)
         {
-            if (channel == eventName)
+            if (Channel == channel)
                 foreach (var handler in handlers)
                     handler(eventName);
         }
