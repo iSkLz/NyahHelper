@@ -1,0 +1,6 @@
+﻿- Name: NyahHelper
+  Version: 1.0.0
+  DLL: NyahHelper.dll
+  Dependencies:
+    - Name: Everest
+      Version: 1.23.0
