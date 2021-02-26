@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 
+using MonoMod.Utils;
 using MonoMod.RuntimeDetour;
 using MonoMod.Cil;
 using Mono.Cecil.Cil;
@@ -22,25 +23,21 @@ namespace NyahHelper.Entities.Blocks
 {
     // TODO: Separate the synced move block from the customizable move block (speed and color)
     // Hooks will conflict when other move block variations are added
-    // TODO 2: Similar hooks are required for custom move blocks, so maybe figure out a way to keep everything clean? Like a ModdableMoveBlock that manages hooks
 
     public static class SyncedMoveBlockHook
     {
-        public static float SpeedPatch;
-        static readonly FieldInfo _speedPatch = typeof(SyncedMoveBlockHook).GetField(nameof(SpeedPatch), Constants.PublicStatic);
+        public static readonly MethodInfo Controller = typeof(MoveBlock).GetMethod("Controller", Constants.PrivateInstance).GetStateMachineTarget();
+        public static readonly Type ControllerClass = Controller.DeclaringType;
+        public static readonly FieldInfo ControllerThis = ControllerClass.GetFields().First((fd) => fd.Name.Contains("this"));
 
-        public static bool MovePatch;
-        static readonly FieldInfo _movePatch = typeof(SyncedMoveBlockHook).GetField(nameof(MovePatch), Constants.PublicStatic);
-
-        public static IDetour ControllerILHook;
+        public static IDetour ControllerHook;
 
         public static void Unhook()
         {
-            ControllerILHook.Dispose();
-            ControllerILHook = null;
+            ControllerHook.Dispose();
+            ControllerHook = null;
 
             On.Celeste.MoveBlock.UpdateColors -= MoveBlock_UpdateColors;
-            On.Celeste.MoveBlock.Controller -= MoveBlock_Controller;
             On.Monocle.Scene.BeforeUpdate -= Scene_BeforeUpdate;
         }
 
@@ -53,8 +50,7 @@ namespace NyahHelper.Entities.Blocks
             On.Monocle.Scene.BeforeUpdate += Scene_BeforeUpdate;
 
             // For custom speed and syncing movement
-            On.Celeste.MoveBlock.Controller += MoveBlock_Controller;
-            ControllerILHook = new ILHook(typeof(MoveBlock).GetNestedType("<Controller>d__45", BindingFlags.NonPublic).GetMethod("MoveNext", Constants.All), MoveBlock_ControllerIL);
+            ControllerHook = new ILHook(Controller, MoveBlock_Controller);
 
             Logger.Log("Nyah Helper", "Synced Move Block hooks executed");
         }
@@ -78,126 +74,80 @@ namespace NyahHelper.Entities.Blocks
         #endregion
 
         #region Controller Routine IL Hook
-        private static void MoveBlock_ControllerIL(ILContext il)
+        private static void MoveBlock_Controller(ILContext il)
         {
             FieldInfo fastField = typeof(MoveBlock).GetField("fast", Constants.PrivateInstance);
             FieldInfo angleField = typeof(MoveBlock).GetField("targetAngle", Constants.PrivateInstance);
             var cursor = new ILCursor(il);
 
-            // Static fields used here are set in the other coroutine hook
-
-            // Replace the instruction that changes the targetSpeed to 60f (in case of fast == false) with an instruction that loads directly from the static field
-            // Since the synced move block always sets fast to false, we can only change this instruction and default to 60f for vanilla blocks
-            cursor.GotoNext((inst) => inst.MatchLdcR4(60f));
-            cursor.Remove();
-            cursor.Emit(OpCodes.Ldsfld, _speedPatch); // Load the static field instead
-
-            // Replace the check for whether the player is in control of the block with the static field
-            cursor.GotoNext((inst) => inst.MatchStfld(angleField),
-                (inst) => inst.MatchLdloc(1));
-            cursor.GotoNext((inst) => inst.MatchLdloc(2));
-            cursor.Remove();
-            cursor.Emit(OpCodes.Ldsfld, _movePatch);
-            cursor.GotoNext((inst) => inst.MatchLdloc(2));
-            cursor.Remove();
-            cursor.Emit(OpCodes.Ldsfld, _movePatch);
-        }
-        #endregion
-
-        #region Controller Routine Hook
-        private static IEnumerator MoveBlock_Controller(On.Celeste.MoveBlock.orig_Controller orig, MoveBlock self)
-        {
-            var enumerator = orig(self);
-            object cur;
-
-            void step()
+            void emitThis()
             {
-                enumerator.MoveNext();
-                cur = enumerator.Current;
+                cursor.Emit(OpCodes.Ldfld, ControllerThis);
             }
 
-            var dir = (int)typeof(MoveBlock).GetField("direction", Constants.PrivateInstance).GetValue(self);
+            //List<string> offsets = new List<string>();
 
-            // Mimic the original routine by yielding what it yields
-            // Below code is based on decompiled code
-            while (true)
-            {
-                // Cycle 1: Before triggering
-                step();
-                while (cur is null)
-                {
-                    yield return null;
-                    step();
-                }
-
-                if (self is SyncedMoveBlock syncedSelf)
+            // Inject trigger broadcasting code before the routine yields 0.2f
+            cursor.GotoNext(MoveType.After, (inst) => inst.MatchLdarg(0),
+                (inst) => inst.MatchLdcI4(2),
+                (inst) => inst.OpCode == OpCodes.Stfld);
+            //offsets.Add("Before yielding 0.2f, " + cursor.Index);
+            emitThis();
+            //offsets.Add("After emitting this field, " + cursor.Index);
+            cursor.EmitDelegate<Action<MoveBlock>>((block) => {
+                if (block is SyncedMoveBlock synced)
                 {
                     // We're going to trigger, so we broadcast the event
-                    self.Scene.OnEndOfFrame += () =>
+                    synced.Scene.OnEndOfFrame += () =>
                     {
-                        syncedSelf.Broadcaster.BroadcastEvent("trigger");
+                        synced.Broadcaster.BroadcastEvent("trigger");
                     };
-
-                    // We also wait for other blocks to trigger, for perfect synchronization
-                    // TODO: Find a way to trigger without desyncing with vanilla blocks
-                    yield return null;
-                    yield return null;
-
-                    yield return cur; // 0.2f
-
-                    // After the yield 0.2f line, there is a line that sets the speed
-                    // The patched IL code loads the speed from the static field, so we set it to the custom speed in case of a synced block
-                    SpeedPatch = syncedSelf.CustomSpeed;
                 }
-                else
+            });
+            //offsets.Add("After emitting broadcast delegate, " + cursor.Index);
+
+            // Customize the speed
+            cursor.GotoNext(MoveType.After, (inst) => inst.MatchLdcR4(60f));
+            //offsets.Add("After pushing 60f onto the stack, " + cursor.Index);
+            emitThis();
+            //offsets.Add("After emitting this field, " + cursor.Index);
+            cursor.EmitDelegate<Func<MoveBlock, float, float>>((block, value) => {
+                if (block is SyncedMoveBlock synced) return synced.CustomSpeed;
+                else return value;
+            });
+            //offsets.Add("After emitting custom speed delegate, " + cursor.Index);
+
+            // A function that replaces the check for whether the player is in control of the block
+            // In other words, it syncs movement
+            Func<MoveBlock, bool, bool> moveCheck = (block, value) =>
+            {
+                if (block is SyncedMoveBlock synced)
                 {
-                    yield return cur; // 0.2f
-
-                    // We do the same for the vanilla speed
-                    SpeedPatch = 60f;
+                    synced.Move = false;
+                    return value || synced.Move;
                 }
+                else return value;
+            };
 
-                // Cycle 2: Moving
-                if (self is SyncedMoveBlock syncedSelf2)
-                {
-                    MovePatch = syncedSelf2.Move || syncedSelf2.Controlled;
-                    step();
-                    while (cur is null)
-                    {
-                        yield return null;
-                        MovePatch = syncedSelf2.Move || syncedSelf2.Controlled;
-                        step();
-                    }
-                }
-                else
-                {
-                    // A non-synced block, do the vanilla check
-                    MovePatch = (dir > 1) ? self.HasPlayerClimbing() : self.HasPlayerOnTop();
-                    step();
-                    while (cur is null)
-                    {
-                        yield return null;
-                        MovePatch = (dir > 1) ? self.HasPlayerClimbing() : self.HasPlayerOnTop();
-                        step();
-                    }
-                }
+            // Inject the function in the check locations
+            cursor.GotoNext((inst) => inst.MatchStfld(angleField),
+                (inst) => inst.MatchLdloc(1));
+            //offsets.Add("After storing targetAngle and loading local variable #1, " + cursor.Index);
 
-                yield return cur; // 0.2f
-                step();
-                yield return cur; // 2.2f
+            // Match the two instructions that load local variable #2, which stores the check
+            cursor.GotoNext(MoveType.After, (inst) => inst.MatchLdloc(2));
+            //offsets.Add("After loading local variable #2, which contains the check for moving, " + cursor.Index);
+            emitThis();
+            //offsets.Add("After emitting this field, " + cursor.Index);
+            cursor.EmitDelegate(moveCheck);
+            //offsets.Add("After emitting custom check delegate, " + cursor.Index);
 
-                // Cycle 3: Breaking
-                step();
-                while (cur is null)
-                {
-                    yield return null;
-                    step();
-                }
-
-                yield return cur; // 0.2f
-                step();
-                yield return cur; // 0.6f
-            }
+            cursor.GotoNext(MoveType.After, (inst) => inst.MatchLdloc(2));
+            //offsets.Add("After loading local variable #2, which contains the check for moving, " + cursor.Index);
+            emitThis();
+            //offsets.Add("After emitting this field, " + cursor.Index);
+            cursor.EmitDelegate(moveCheck);
+            //offsets.Add("After emitting custom check delegate, " + cursor.Index);
         }
         #endregion
 
