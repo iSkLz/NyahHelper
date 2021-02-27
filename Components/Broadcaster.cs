@@ -22,31 +22,31 @@ namespace NyahHelper.Components
         /// <summary>
         /// Fires an event on this Broadcaster instance
         /// </summary>
-        /// <param name="eventName">Name of the event</param>
-        public void FireEvent(string channel, string eventName)
+        /// <param name="event">Name of the event</param>
+        public void FireEvent(string channel, string @event)
         {
             if (Channel == channel)
                 foreach (var handler in handlers)
-                    handler(eventName);
+                    handler(@event);
         }
 
         /// <summary>
         /// Broadcasts an event to all Broadcaster instances listening to the same channel
         /// </summary>
-        /// <param name="eventName">Name of the event</param>
-        public void BroadcastEvent(string eventName)
+        /// <param name="event">Name of the event</param>
+        public void BroadcastEvent(string @event)
         {
             foreach (Broadcaster broadcaster in Scene.Tracker.GetComponents<Broadcaster>())
-                broadcaster.FireEvent(Channel, eventName);
+                broadcaster.FireEvent(Channel, @event);
         }
 
         /// <summary>
         /// Adds an event handler
         /// </summary>
         /// <param name="handler">An event handler which is called with fired event names</param>
-        /// <param name="eventName">An event only for which the handler will be invoked</param>
-        public void AddHandler(Action<string> handler, string eventName = null) {
-            if (eventName is null)
+        /// <param name="event">An event only for which the handler will be invoked</param>
+        public void AddHandler(Action<string> handler, string @event = null) {
+            if (@event is null)
             {
                 handlers.Add(handler);
             }
@@ -54,7 +54,7 @@ namespace NyahHelper.Components
             {
                 handlers.Add((e) =>
                 {
-                    if (e == eventName) handler(e);
+                    if (e == @event) handler(e);
                 });
             }
         }

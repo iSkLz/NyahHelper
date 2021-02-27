@@ -10,6 +10,7 @@ using MonoMod.Cil;
 using Mono.Cecil.Cil;
 
 using NyahHelper.Components;
+using NyahHelper.Extensions;
 
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -73,27 +74,30 @@ namespace NyahHelper.Entities.Blocks
         }
         #endregion
 
+        private static void debug() {
+            System.Diagnostics.Debugger.Break();
+        }
+
         #region Controller Routine IL Hook
         private static void MoveBlock_Controller(ILContext il)
         {
             FieldInfo fastField = typeof(MoveBlock).GetField("fast", Constants.PrivateInstance);
             FieldInfo angleField = typeof(MoveBlock).GetField("targetAngle", Constants.PrivateInstance);
+            FieldInfo directionField = typeof(MoveBlock).GetField("direction", Constants.PrivateInstance);
             var cursor = new ILCursor(il);
 
+            // Pushes the moveblock instance onto the stack
             void emitThis()
             {
-                cursor.Emit(OpCodes.Ldfld, ControllerThis);
+                cursor.Emit(OpCodes.Ldloc_1);
             }
 
-            //List<string> offsets = new List<string>();
-
+            #region Trigger Broadcasting
             // Inject trigger broadcasting code before the routine yields 0.2f
             cursor.GotoNext(MoveType.After, (inst) => inst.MatchLdarg(0),
                 (inst) => inst.MatchLdcI4(2),
                 (inst) => inst.OpCode == OpCodes.Stfld);
-            //offsets.Add("Before yielding 0.2f, " + cursor.Index);
             emitThis();
-            //offsets.Add("After emitting this field, " + cursor.Index);
             cursor.EmitDelegate<Action<MoveBlock>>((block) => {
                 if (block is SyncedMoveBlock synced)
                 {
@@ -104,50 +108,45 @@ namespace NyahHelper.Entities.Blocks
                     };
                 }
             });
-            //offsets.Add("After emitting broadcast delegate, " + cursor.Index);
+            #endregion
 
-            // Customize the speed
+            #region Speed Manipulation
             cursor.GotoNext(MoveType.After, (inst) => inst.MatchLdcR4(60f));
-            //offsets.Add("After pushing 60f onto the stack, " + cursor.Index);
             emitThis();
-            //offsets.Add("After emitting this field, " + cursor.Index);
+            // We don't need "value" but we still need to pop it off the stack
             cursor.EmitDelegate<Func<MoveBlock, float, float>>((block, value) => {
                 if (block is SyncedMoveBlock synced) return synced.CustomSpeed;
-                else return value;
+                else return 60f;
             });
-            //offsets.Add("After emitting custom speed delegate, " + cursor.Index);
+            #endregion
 
-            // A function that replaces the check for whether the player is in control of the block
-            // In other words, it syncs movement
-            Func<MoveBlock, bool, bool> moveCheck = (block, value) =>
-            {
-                if (block is SyncedMoveBlock synced)
-                {
-                    synced.Move = false;
-                    return value || synced.Move;
-                }
-                else return value;
-            };
-
-            // Inject the function in the check locations
+            #region Movement Synchronization
+            // Find the first instruction to check the direction
             cursor.GotoNext((inst) => inst.MatchStfld(angleField),
-                (inst) => inst.MatchLdloc(1));
-            //offsets.Add("After storing targetAngle and loading local variable #1, " + cursor.Index);
+                (inst) => inst.MatchLdloc(1),
+                (inst) => inst.MatchLdfld(directionField));
+            cursor.Index++;
 
-            // Match the two instructions that load local variable #2, which stores the check
-            cursor.GotoNext(MoveType.After, (inst) => inst.MatchLdloc(2));
-            //offsets.Add("After loading local variable #2, which contains the check for moving, " + cursor.Index);
-            emitThis();
-            //offsets.Add("After emitting this field, " + cursor.Index);
-            cursor.EmitDelegate(moveCheck);
-            //offsets.Add("After emitting custom check delegate, " + cursor.Index);
+            // Purge every instruction until an ldloc.2 is encountered
+            while (!cursor.Instrs[cursor.Index].MatchLdloc(2))
+            {
+                cursor.Remove();
+            }
 
-            cursor.GotoNext(MoveType.After, (inst) => inst.MatchLdloc(2));
-            //offsets.Add("After loading local variable #2, which contains the check for moving, " + cursor.Index);
+            // Write the new check
             emitThis();
-            //offsets.Add("After emitting this field, " + cursor.Index);
-            cursor.EmitDelegate(moveCheck);
-            //offsets.Add("After emitting custom check delegate, " + cursor.Index);
+            cursor.EmitDelegate<Func<MoveBlock, bool>>((block) =>
+            {
+                return (block is SyncedMoveBlock synced)
+                    ? synced.Move || synced.Controlled
+                    : block.GetDirection() > 1 ? block.HasPlayerClimbing() : block.HasPlayerOnTop();
+            });
+
+            // Duplicate the value
+            cursor.Emit(OpCodes.Dup);
+            // Store it back for the next check, this pops the duplicate off the stack (and one remains)
+            cursor.Emit(OpCodes.Stloc_2);
+            #endregion
         }
         #endregion
 
